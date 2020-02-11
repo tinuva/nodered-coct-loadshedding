@@ -1,0 +1,155 @@
+[{
+    "id": "b2e43c1e.1d392",
+    "type": "tab",
+    "label": "Load-shedding Status",
+    "disabled": false,
+    "info": ""
+}, {
+    "id": "887184d5.024b58",
+    "type": "inject",
+    "z": "b2e43c1e.1d392",
+    "name": "Check every minute",
+    "topic": "",
+    "payload": "",
+    "payloadType": "num",
+    "repeat": "60",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "0.1",
+    "x": 160,
+    "y": 100,
+    "wires": [
+        ["4cda00a7.9af18"]
+    ]
+}, {
+    "id": "55275689.64c918",
+    "type": "debug",
+    "z": "b2e43c1e.1d392",
+    "name": "Log Message",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "x": 720,
+    "y": 360,
+    "wires": []
+}, {
+    "id": "2008f989.8e1066",
+    "type": "mqtt out",
+    "z": "b2e43c1e.1d392",
+    "name": "Send Notification to Slack",
+    "topic": "/slack/poweralerts/coct",
+    "qos": "",
+    "retain": "",
+    "broker": "d206e55c.6ad4e8",
+    "x": 750,
+    "y": 180,
+    "wires": []
+}, {
+    "id": "75abd0b9.7c1b7",
+    "type": "mqtt out",
+    "z": "b2e43c1e.1d392",
+    "name": "Sent to slack test channel",
+    "topic": "/test/channel",
+    "qos": "",
+    "retain": "",
+    "broker": "d206e55c.6ad4e8",
+    "x": 750,
+    "y": 240,
+    "wires": []
+}, {
+    "id": "4cda00a7.9af18",
+    "type": "http request",
+    "z": "b2e43c1e.1d392",
+    "name": "Connect to Eskom API",
+    "method": "GET",
+    "ret": "txt",
+    "paytoqs": false,
+    "url": "http://loadshedding.eskom.co.za/LoadShedding/GetStatus?_=1578576949822",
+    "tls": "",
+    "proxy": "",
+    "authType": "",
+    "x": 420,
+    "y": 40,
+    "wires": [
+        ["ba72eeb8.2359a"]
+    ]
+}, {
+    "id": "ba72eeb8.2359a",
+    "type": "function",
+    "z": "b2e43c1e.1d392",
+    "name": "Save state",
+    "func": "var stagestr = msg.payload;\n\nif(isNaN(stagestr) ? !1 : (x = parseFloat(stagestr), (0 | x) === x)) {\n    var stage = parseInt(msg.payload, 10) - 1;\n    stage = stage.toString();\n    flow.set('stage', stage);\n    msg.payload = stage;\n    return msg;\n} else { return; }\n\n",
+    "outputs": 1,
+    "noerr": 0,
+    "x": 710,
+    "y": 40,
+    "wires": [
+        []
+    ]
+}, {
+    "id": "9994ced4.5a391",
+    "type": "function",
+    "z": "b2e43c1e.1d392",
+    "name": "lstest",
+    "func": "// MIT License\n\n// Copyright (c) 2019 Daniel Lindsay\n\n// Permission is hereby granted, free of charge, to any person obtaining a copy\n// of this software and associated documentation files (the \"Software\"), to deal\n// in the Software without restriction, including without limitation the rights\n// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell\n// copies of the Software, and to permit persons to whom the Software is\n// furnished to do so, subject to the following conditions:\n\n// The above copyright notice and this permission notice shall be included in all\n// copies or substantial portions of the Software.\n\n// THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\n// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\n// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\n// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\n// SOFTWARE.\n\n// ==============================================================================\n\n\n\n// this all makes a lot ore sense when looking at the actual tables:\n// http://resource.capetown.gov.za/documentcentre/Documents/Procedures%2c%20guidelines%20and%20regulations/Load_Shedding_All_Areas_Schedule_and_Map.pdf\n\n// indecies are 1-based (not 0-based) because we are dealing with day dates, etc so it's just easier imo :)\n// there could be more error handling and validation but you can add that as needed.\n\n// So basically these tables are generated with simple increments throughout numTimeSlots each day...\n\nconst numDayGroups = 16; // columns\nconst numTimeSlots = 12; // rows\nconst numAreaCodes = 16; // what we accumulate to before restarting from 1\n\nconst highestStage = 8;\nconst maxMonthDay = 31;\n\n// but some days, they randomly skip an area for some reason (1-based)\nconst dayAreaExtraIncrements = [5, 9];\n// and the 13th day is only skipped in stages 4 and lower. Ugh this is becoming messy...\nconst dayAreaExtraIncrementsStage4Lower = [13];\n\n// I have questions for who created these loadshedding tables. Anyway...\n\n// Each stage is just a table with a new area starting the chain.\n// To get each stage's full table, you add the previous stages' table data\nconst stageStartingAreas = {\n\t1: 1,\n\t2: 9,\n\t3: 13,\n\t4: 5,\n\t5: 2,\n\t6: 10,\n\t7: 14,\n\t8: 6\n};\n\n// this could be better maybe\nconst timeSlotHours = 2;\nconst timeSlotMinutes = 30;\n\n// then according to the tables (link above),\n// there is this one block where in stage 4, in timeslot 4, area 4 is skipped for some reason\n// it's suspicious but this whole thing has ended up a bit of a hack anyway as they do lots of illogical things\n\n// I want to keep things simple, so this is a Time object for 1 day so we can just deal with relative values\nclass DayTime {\n\tconstructor(hour = 0, minute = 0) {\n\t\tthis.hour = hour;\n\t\tthis.minute = minute;\n\n\t\tif(this.hour >= 24 || this.hour < 0) {\n\t\t\tthis.hour = 0;\n\t\t}\n\n\t\tif(this.minute >= 60 || this.minute < 0) {\n\t\t\tthis.minute = 0;\n\t\t}\n\t}\n}\n\n// quick helper\nfunction addDays(date, days) {\n\tvar result = new Date(date);\n\tresult.setDate(result.getDate() + days);\n\treturn result;\n}\n\n// our main class\n// can also overload these functions in a proper language\nclass LoadSheddingSchedule {\n\t/**\n\t * Get what areas are loadshedding on a particular day and timeslot\n\t * \n\t * @param {number} stage Eskom stage\n\t * @param {number} day day of the month\n\t * @param {number} timeSlot id of timeslot in the table (1-12)\n\t */\n\tgetAreaCodesByTimeSlot(stage, day, timeSlot) {\n\t\tday = this._clipDayToGroup(day);\n\t\tlet areaCodeAcc = this._getAreaCodeAccumulationDayStart(stage, day) + timeSlot;\n\t\tlet areaCode = this._normalizeAreaCode(stage, areaCodeAcc);\n\t\tlet areaCodes = [areaCode];\n\n\t\t// hack: this one is skipped according to the tables for some reason\n\t\tif(stage == 4 && timeSlot == 4 && day == 15) {\n\t\t\tareaCodes = [];\n\t\t}\n\n\t\tif(stage > 1) {\n\t\t\tareaCodes = areaCodes.concat(this.getAreaCodesByTimeSlot(stage - 1, day, timeSlot));\n\t\t}\n\n\t\treturn areaCodes;\n\t}\n\n\t/**\n\t * Get what areas are loadshedding on a particular day and time\n\t * \n\t * @param {number} stage Eskom stage\n\t * @param {number} day day of the month\n\t * @param {DayTime} time time of the day\n\t * @param {boolean} includeoverlap include all the areas when to loadshedding slots are overlapping by getExtraTimeslotMinutes()\n\t * @param {number} previousMonthLastDay this is needed when using overlap in case you are one day 1 at and it searches back to the previous month\n\t */\n\tgetAreaCodesByTimeValue(stage, day, time, includeoverlap = false, previousMonthLastDay = 31) {\n\t\tlet isOddHour = time.hour % timeSlotHours != 0;\n\t\tlet timeSlot = this._getTimeslotFromHour(time.hour);\n\n\t\tlet areaCodes = this.getAreaCodesByTimeSlot(stage, day, timeSlot);\n\n\t\tif(includeoverlap && !isOddHour && time.minute <= timeSlotMinutes) {\n\t\t\tif(timeSlot > 1) {\n\t\t\t\ttimeSlot--;\n\t\t\t} else {\n\t\t\t\ttimeSlot = numTimeSlots;\n\t\t\t\t\n\t\t\t\tif(day > 1) {\n\t\t\t\t\tday--;\n\t\t\t\t} else {\n\t\t\t\t\tday = previousMonthLastDay;\n\t\t\t\t}\n\t\t\t}\n\n\t\t\tareaCodes.push(this.getAreaCodesByTimeSlot(stage, day, timeSlot));\n\t\t}\n\n\t\treturn areaCodes;\n\t}\n\n\t/**\n\t * Get the ids of timeslots that a particular area is being loadshed for a day\n\t * \n\t * @param {number} stage Eskom stage\n\t * @param {number} day day of the month\n\t * @param {number} areaCode the code of the area to check\n\t */\n\tgetTimeSlotsByAreaCode(stage, day, areaCode) {\n\t\tlet timeSlots = [];\n\t\tfor (let i = 0; i < numTimeSlots; i++) {\n\t\t\tlet areas = this.getAreaCodesByTimeSlot(stage, day, i + 1);\n\t\t\tif(areas.indexOf(areaCode) > -1) {\n\t\t\t\ttimeSlots.push(i + 1);\n\t\t\t\tcontinue;\n\t\t\t}\n\t\t}\n\n\t\treturn timeSlots;\n\t}\n\n\t/**\n\t * Get the next timeslot that will be loadshed in a day, starting from a specified hour\n\t * \n\t * @param {number} stage Eskom stage\n\t * @param {number} day day of the month\n\t * @param {number} areaCode the code of the area to check\n\t * @param {number} fromHour bit hacky... what hour to start the search from. Value of -1 starts at beginning of the day (instead of hour 2)\n\t */\n\tgetNextTimeSlotInDay(stage, day, areaCode, fromHour = -1) {\n        let slots = this.getTimeSlotsByAreaCode(stage, day, areaCode);\t\t\n\n        for (let i = 0; i < slots.length; i++) {\n            let slot = slots[i];\n            let slotHour = this.getTimeSlotHour(slot);\n\n            if(fromHour == -1 || slotHour > fromHour) {\n                return slot;\n            }\n        }\n\n        return 0;\n\t}\n\t\n\t/**\n\t * Get the next timeslot and date that will be loadshed. Will search multiple days\n\t * \n\t * @param {number} stage Eskom stage\n\t * @param {number} areaCode the code of the area to check\n\t */\n\tgetNextTimeSlot(stage, areaCode) {\n\t\t// since we're about to go into a loop, searching for known data,\n\t\t// better make sure the search data is valid. We can then be sure\n\t\t// we will find a result\n\t\tlet result = {\n\t\t\tslot: null,\n\t\t\tday: null,\n\t\t\tdate: null\n\t\t};\n\n\t\tif(stage < 1 || stage > highestStage) {\n\t\t\tconsole.log('getNextTimeSlot() stage out of bounds');\n\t\t\treturn result;\n\t\t}\n\n\t\tif(areaCode < 1 || areaCode > numAreaCodes) {\n\t\t\tconsole.log('getNextTimeSlot() areaCode out of bounds');\n\t\t\treturn result;\n\t\t}\n\n\t\tlet d = new Date();\n\t\tlet fromHour = d.getHours();\n\t\tlet fromDay = d.getDate();\n\n\t\tlet slot = null;\n\t\tlet day = fromDay;\n\t\tlet dayAccum = 0;\n\t\twhile(!slot) {\n\t\t\tslot = this.getNextTimeSlotInDay(stage, day, areaCode, day == fromDay ? fromHour : -1);\n\n\t\t\tif(!slot) {\n\t\t\t\tif(day >= maxMonthDay) {\n\t\t\t\t\tday = 1;\n\t\t\t\t} else {\n\t\t\t\t\tday++;\n\t\t\t\t}\n\n\t\t\t\tdayAccum++;\n\t\t\t}\n\t\t}\n\n\t\tlet newDate = new Date();\n\t\tnewDate.setHours(this.getTimeSlotHour(slot));\n\t\tnewDate.setMinutes(0);\n\t\tnewDate.setSeconds(0);\n\t\tnewDate.setMilliseconds(0);\n\t\tnewDate = addDays(newDate, dayAccum);\n\n\t\tresult.slot = slot;\n\t\tresult.day = day;\n\t\tresult.date = newDate;\n\n\t\treturn result;\n\t}\n\n\t/**\n\t * Return if we are currently loadshedding for a particular area and when the endtime is\n\t * \n\t * @param {number} stage Eskom stage\n\t * @param {number} areaCode the code of the area to check\n\t */\n\tisLoadSheddingNow(stage, areaCode) {\n\t\tlet d = new Date();\n\t\tlet hour = d.getHours();\n\t\tlet areaCodes = this.getAreaCodesByTimeValue(stage, d.getDate(), new DayTime(hour, d.getMinutes()));\n\n\t\tlet result = {\n\t\t\tstatus: false,\n\t\t\tendDate: null\n\t\t};\n\n\t\tif(areaCodes.indexOf(areaCode) > -1) {\n\t\t\tresult.status = true;\n\t\t}\n\n\t\tif(result.status) {\n\t\t\t// convert to timeslot and back to hour to get correct hour\n\t\t\tlet slot = this._getTimeslotFromHour(hour);\n\t\t\tlet endDate = new Date();\n\t\t\tendDate.setHours(this.getTimeSlotHour(slot) + timeSlotHours);\n\t\t\tendDate.setMinutes(timeSlotMinutes);\n\t\t\tendDate.setSeconds(0);\n\t\t\tendDate.setMilliseconds(0);\n\t\t\tresult.endDate = endDate;\n\t\t}\n\n\t\treturn result;\n\t}\n\n\t/**\n\t * Get the starting hour of a timeslot\n\t * \n\t * @param {number} slot timeslot id\n\t */\n    getTimeSlotHour(slot) {\n        return (slot - 1) * timeSlotHours;\n\t}\n\t\n\t/**\n\t * Get the extra minutes of an loadshedding timeslot period\n\t */\n\tgetExtraTimeslotMinutes() {\n\t\treturn timeSlotMinutes;\n\t}\n\n\t// private stuff\n\n\t_getTimeslotFromHour(hour) {\n\t\tlet isOddHour = hour % timeSlotHours != 0;\n\n\t\tlet timeSlot = hour;\n\t\tif(isOddHour) {\n\t\t\ttimeSlot--;\n\t\t}\n\n\t\treturn timeSlot / timeSlotHours + 1;\n\t}\n\n\t_clipDayToGroup(day) {\n\t\tif(day > numDayGroups) {\n\t\t\tday -= numDayGroups;\n\t\t}\n\n\t\treturn day;\n\t}\n\n\t_getAreaCodeAccumulationDayStart(stage, day) {\n\t\tif(day <= 1) {\n\t\t\treturn 0;\n\t\t}\n\n\t\tlet dayBefore = day - 1;\n\t\tlet areaCodeAcc = dayBefore * numTimeSlots;\n\t\t\n\t\t// add the extra offsets, including the current day\n\t\tfor (var i = 0; i < dayAreaExtraIncrements.length; i++) {\n\t\t\tif(day >= dayAreaExtraIncrements[i]) {\n\t\t\t\tareaCodeAcc++;\n\t\t\t}\n\t\t}\n\n\t\tif(stage <= 4) {\n\t\t\tfor (var i = 0; i < dayAreaExtraIncrementsStage4Lower.length; i++) {\n\t\t\t\tif(day >= dayAreaExtraIncrementsStage4Lower[i]) {\n\t\t\t\t\tareaCodeAcc++;\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\n\t\treturn areaCodeAcc;\n\t}\n\n\t_normalizeAreaCode(stage, areaCodeAcc) {\n\t\tlet areaCode = areaCodeAcc % numAreaCodes;\n\t\tareaCode += stageStartingAreas[stage] - 1;\n\t\tif(areaCode > numAreaCodes) {\n\t\t\tareaCode -= numAreaCodes;\n\t\t}\n\n\t\treturn areaCode;\n\t}\n}\n\nfunction timeNow(i) {\n  var d = i,\n    h = (d.getHours()<10?'0':'') + d.getHours(),\n    m = (d.getMinutes()<10?'0':'') + d.getMinutes();\n  i.value = h + ':' + m;\n  return h + ':' + m;\n}\n\nvar stage = flow.get('stage')||'';\nvar area = 6;\nvar options = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' };\nvar optionstime = { hour: '2-digit', minute: '2-digit' };\n\nmsg.payload = '';\nmsg.stage = stage;\nmsg.area = area;\nmsg.payload = msg;\nif(stage === \"0\") { return msg; }\n\n\n\nvar loadSheddingSchedule = new LoadSheddingSchedule();\nvar today = new Date();\nvar nextDay = new Date(); nextDay.setDate(new Date().getDate()+1);\n\t\nlet slotstoday    = loadSheddingSchedule.getTimeSlotsByAreaCode(stage, today.getDate(), area);\nlet timestoday = []; \nfor (var i = 0; i < slotstoday.length; i++) {\n\t//timestoday.push(today.setHours(loadSheddingSchedule.getTimeSlotHour(slotstoday[i])).toLocaleString(\"en-UK\", options));\n\t//timestoday.push(loadSheddingSchedule.getTimeSlotHour(slotstoday[i]));\n\ttoday.setHours(loadSheddingSchedule.getTimeSlotHour(slotstoday[i]) );\n\ttoday.setMinutes(0);\n\ttimestoday.push(timeNow(today));\n}\n\nlet slotstomorrow = loadSheddingSchedule.getTimeSlotsByAreaCode(stage, nextDay.getDate(), area);\ntimestomorrow = []; \nfor (i = 0; i < slotstomorrow.length; i++) {\n\t//timestomorrow.push(loadSheddingSchedule.getTimeSlotHour(slotstomorrow[i]));\n\tnextDay.setHours(loadSheddingSchedule.getTimeSlotHour(slotstomorrow[i]) );\n\tnextDay.setMinutes(0);\n\ttimestomorrow.push(timeNow(nextDay));\n}\n\n\t\tfunction getTimeStats(endDateTime) {\n\t\t\t// Get todays date and time\n\t\t\tlet now = new Date().getTime();\n\t\t\tlet distance = endDateTime - now;\n\n\t\t\treturn {\n\t\t\t\t// Find the distance between now and the count down date\n\t\t\t\tdistance: distance,\n\t\t\t\t// Time calculations for days, hours, minutes and seconds\n\t\t\t\tdays: Math.floor(distance / (1000 * 60 * 60 * 24)),\n\t\t\t\thours: Math.floor((distance % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60)),\n\t\t\t\tminutes: Math.floor((distance % (1000 * 60 * 60)) / (1000 * 60)),\n\t\t\t\tseconds: Math.floor((distance % (1000 * 60)) / 1000)\n\t\t\t};\n\t\t}\n\n        let eta = ''; let stats = ''; let inls = ''; \n        let countdown_a = ''; let countdown_b = ''; let text_a = ''; let text_b = '';\n\n\t\tlet loadshedding = loadSheddingSchedule.isLoadSheddingNow(stage, area);\n\t\tif(loadshedding.status) {\n\t\t\t// Update the count down every 1 second\n\t\t\tstats = getTimeStats(loadshedding.endDate.getTime());\n\n\t\t\t// Display the result in the element with id=\"demo\"\n\t\t\tcountdown_a = 'ETA: ' + stats.days + \"d \" + stats.hours + \"h \" + stats.minutes + \"m \" + stats.seconds + \"s \";\n\n\n\t\t\ttext_a = 'In a loadshedding timeslot'; //. Time left in loadshedding';\n\t\t} else {\n\t\t\ttext_a = 'Not in loadshedding timeslot currently';\n\t\t}\n\n\t\tlet nextSlot = loadSheddingSchedule.getNextTimeSlot(stage, area);\n\t\ttext_b = 'Next slot is on ' + nextSlot.date.toLocaleString(\"en-UK\", options);\n\n\t\t// Set the date we're counting down to\n\t\tvar countDownDate = nextSlot.date.getTime();\n\t\t// Update the count down every 1 second\n\n\t\t\tstats = getTimeStats(countDownDate);\n\n\t\t\t// Display the result in the element with id=\"demo\"\n\t\t\tcountdown_b = 'ETA: ' + stats.days + \"d \" + stats.hours + \"h \" + stats.minutes + \"m \" + stats.seconds + \"s \";\n\n\t\t\t// If the count down is finished, write some text\n\t\t\tif (stats.distance < 0) {\n\t\t\t\tcountdown_b = \"EXPIRED\";\n\t\t\t}\n\nmsg.slots = {};\nmsg.slots.today = slotstoday;\nmsg.slots.tomorrow = slotstomorrow;\n\nmsg.times = {};\nmsg.times.today = timestoday;\nmsg.times.tomorrow = timestomorrow;\n\nmsg.countdowna = countdown_a;\nmsg.countdownb = countdown_b;\nmsg.texta = text_a;\nmsg.textb = text_b;\n\nreturn msg;",
+    "outputs": 1,
+    "noerr": 0,
+    "x": 310,
+    "y": 300,
+    "wires": [
+        ["f83a0c8a.678a4"]
+    ]
+}, {
+    "id": "848e398e.25a9f8",
+    "type": "inject",
+    "z": "b2e43c1e.1d392",
+    "name": "",
+    "topic": "Eery 10 seconds",
+    "payload": "",
+    "payloadType": "str",
+    "repeat": "10",
+    "crontab": "",
+    "once": true,
+    "onceDelay": 0.1,
+    "x": 150,
+    "y": 300,
+    "wires": [
+        ["9994ced4.5a391"]
+    ]
+}, {
+    "id": "f83a0c8a.678a4",
+    "type": "function",
+    "z": "b2e43c1e.1d392",
+    "name": "Check if status changed",
+    "func": "eWarn = false;\nif(msg.stage === \"0\") { \n        newMsg = \"Eskom Loadshedding stopped.\";\n} else {\n    var newMsg = \"Eskom loadshedding stage: \" + msg.stage;\n    newMsg = newMsg + \"\\nArea \" + msg.area + \": \" + msg.texta + \"\\n\";\n    newMsg = newMsg + \"Today's slots: \";\n    for (var i = 0; i < msg.times.today.length; i++) {\n        newMsg = newMsg + msg.times.today[i] + \" \";\n    }\n    newMsg = newMsg + \"\\nTomorrow's slots: \";\n    for (i = 0; i < msg.times.tomorrow.length; i++) {\n        newMsg = newMsg + msg.times.tomorrow[i] + \" \";\n    }\n    newMsg = newMsg + \"\\n\" + msg.textb;\n    eMsg = \"\\n\" + msg.countdownb;\n    if(msg.countdownb.substring(5, 16) === \"0d 0h 20m 0\") {\n        eWarn = true;\n    }\n}\n\nvar oldMsg = context.get('lsmsg')||'';\n\nif(oldMsg === newMsg && !eWarn) {\n    return;\n} else {\n    context.set('lsmsg', newMsg);\n    if(msg.stage !== \"0\") {\n        msg.payload = newMsg + eMsg;\n    } else {\n        msg.payload = newMsg;\n    }\n    return msg; \n}",
+    "outputs": 1,
+    "noerr": 0,
+    "x": 490,
+    "y": 300,
+    "wires": [
+        ["2008f989.8e1066", "55275689.64c918"]
+    ]
+}, {
+    "id": "d206e55c.6ad4e8",
+    "type": "mqtt-broker",
+    "z": "",
+    "name": "comms.heaven.za.net",
+    "broker": "comms.heaven.za.net",
+    "port": "1883",
+    "clientid": "",
+    "usetls": false,
+    "compatmode": true,
+    "keepalive": "60",
+    "cleansession": true,
+    "birthTopic": "",
+    "birthQos": "0",
+    "birthPayload": "",
+    "closeTopic": "",
+    "closeQos": "0",
+    "closePayload": "",
+    "willTopic": "",
+    "willQos": "0",
+    "willPayload": ""
+}]
